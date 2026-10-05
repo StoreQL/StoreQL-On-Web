@@ -15,13 +15,13 @@ const formatAuthError = (err) => {
   if (!err) return 'An error occurred during authentication';
   const msg = err.code || err.message || '';
   if (msg.includes('auth/popup-blocked')) {
-    return 'Popup was blocked by your browser. Please allow popups for this site or use email sign in.';
+    return 'Pop-up blocked by browser. Please enable pop-ups in your URL bar, or sign in with email.';
   }
   if (msg.includes('auth/unauthorized-domain')) {
-    return 'This domain is not authorized in Firebase Console. Please add your Vercel domain to Firebase Auth settings.';
+    return 'Domain not authorized. Please add your Vercel URL to Firebase Console > Authentication > Settings > Authorized domains.';
   }
   if (msg.includes('auth/popup-closed-by-user')) {
-    return 'Sign-in popup was closed before completing.';
+    return 'Sign-in window was closed before finishing.';
   }
   if (msg.includes('auth/user-not-found') || msg.includes('auth/wrong-password') || msg.includes('auth/invalid-credential')) {
     return 'Invalid email or password.';
@@ -99,18 +99,7 @@ export const loginWithGoogle = createAsyncThunk(
   'auth/loginWithGoogle',
   async (_, { rejectWithValue }) => {
     try {
-      let result;
-      try {
-        result = await signInWithPopup(auth, googleProvider);
-      } catch (popupErr) {
-        // If popup is blocked, attempt redirect fallback
-        if (popupErr.code === 'auth/popup-blocked') {
-          console.warn('Popup blocked, falling back to signInWithRedirect');
-          await signInWithRedirect(auth, googleProvider);
-          return null;
-        }
-        throw popupErr;
-      }
+      const result = await signInWithPopup(auth, googleProvider);
       const user = result.user;
       let syncData = null;
       try {

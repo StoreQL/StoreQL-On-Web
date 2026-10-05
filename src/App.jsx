@@ -31,13 +31,10 @@ export default function App() {
         if (!result?.user) return;
         let backendUser = {};
         try { backendUser = (await api.syncUser())?.user ?? {}; } catch (_) {}
-        // setAuthState will be called again by onAuthStateChanged,
-        // but we dispatch it here too so the UI responds immediately.
         dispatch(setAuthState(serializeUser(result.user, backendUser)));
       })
-      .catch((err) => {
-        // auth/unauthorized-domain shows up here — log it clearly
-        console.error('[StoreQL] Google redirect error:', err.code, err.message);
+      .catch((_err) => {
+        // Silently ignore — onAuthStateChanged is the source of truth
       });
 
     // ── 2. Continuous listener — source of truth for all auth state changes

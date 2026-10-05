@@ -1,8 +1,7 @@
 import { auth } from './firebase';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://storeql-backend.onrender.com/api';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
-console.log('[StoreQL Web API] Target URL:', API_BASE_URL);
 
 export class ApiClientError extends Error {
   constructor(message, status, details) {

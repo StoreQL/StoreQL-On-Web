@@ -1,86 +1,65 @@
 import { useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { auth, onAuthStateChanged, getRedirectResult } from './services/firebase';
-import { setAuthState } from './store/authSlice';
+import { setAuthState, serializeUser } from './store/authSlice';
 import { setTheme } from './store/uiSlice';
 import { api } from './services/api';
 
-import Navbar from './components/layout/Navbar';
-import Sidebar from './components/layout/Sidebar';
-import Toast from './components/layout/Toast';
-import AuthModal from './components/auth/AuthModal';
-import CaptureModal from './components/link/CaptureModal';
-import CreateSpaceModal from './components/spaces/CreateSpaceModal';
-import HomeView from './views/HomeView';
-import SpacesView from './views/SpacesView';
-import SearchView from './views/SearchView';
-import ProfileView from './views/ProfileView';
+import Navbar            from './components/layout/Navbar';
+import Sidebar           from './components/layout/Sidebar';
+import Toast             from './components/layout/Toast';
+import AuthModal         from './components/auth/AuthModal';
+import CaptureModal      from './components/link/CaptureModal';
+import CreateSpaceModal  from './components/spaces/CreateSpaceModal';
+import HomeView          from './views/HomeView';
+import SpacesView        from './views/SpacesView';
+import SearchView        from './views/SearchView';
+import ProfileView       from './views/ProfileView';
 
 export default function App() {
   const dispatch = useDispatch();
-  const { theme, activeTab } = useSelector((s) => s.ui);
-  const { isInitialized } = useSelector((s) => s.auth);
+  const { theme, activeTab }   = useSelector((s) => s.ui);
+  const { isInitialized }      = useSelector((s) => s.auth);
 
-  // Apply initial theme class
-  useEffect(() => {
-    dispatch(setTheme(theme));
-  }, []);
+  // Apply theme on mount
+  useEffect(() => { dispatch(setTheme(theme)); }, []);
 
-  // Firebase auth listener & redirect handler
   useEffect(() => {
-    // 1. Process redirect result if returning from Google redirect auth
+    // ── 1. Handle Google redirect result (fires once after returning from accounts.google.com)
     getRedirectResult(auth)
       .then(async (result) => {
-        if (result?.user) {
-          let syncExtra = null;
-          try {
-            syncExtra = await api.syncUser();
-          } catch (_) {}
-          dispatch(setAuthState({
-            uid: result.user.uid,
-            email: result.user.email,
-            displayName: syncExtra?.user?.name || result.user.displayName || 'Collector',
-            photoURL: syncExtra?.user?.profileImageUrl || result.user.photoURL || null,
-            emailVerified: result.user.emailVerified,
-            providers: result.user.providerData?.map((p) => p.providerId) || [],
-            mongoId: syncExtra?.user?.id || null,
-          }));
-        }
+        if (!result?.user) return;
+        let backendUser = {};
+        try { backendUser = (await api.syncUser())?.user ?? {}; } catch (_) {}
+        // setAuthState will be called again by onAuthStateChanged,
+        // but we dispatch it here too so the UI responds immediately.
+        dispatch(setAuthState(serializeUser(result.user, backendUser)));
       })
       .catch((err) => {
-        console.warn('[StoreQL Auth] Redirect signin error:', err);
+        // auth/unauthorized-domain shows up here — log it clearly
+        console.error('[StoreQL] Google redirect error:', err.code, err.message);
       });
 
-    // 2. Continuous auth state listener
+    // ── 2. Continuous listener — source of truth for all auth state changes
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        let syncExtra = null;
-        try {
-          syncExtra = await api.syncUser();
-        } catch (_) {}
-        dispatch(setAuthState({
-          uid: firebaseUser.uid,
-          email: firebaseUser.email,
-          displayName: syncExtra?.user?.name || firebaseUser.displayName || 'Collector',
-          photoURL: syncExtra?.user?.profileImageUrl || firebaseUser.photoURL || null,
-          emailVerified: firebaseUser.emailVerified,
-          providers: firebaseUser.providerData?.map((p) => p.providerId) || [],
-          mongoId: syncExtra?.user?.id || null,
-        }));
+        let backendUser = {};
+        try { backendUser = (await api.syncUser())?.user ?? {}; } catch (_) {}
+        dispatch(setAuthState(serializeUser(firebaseUser, backendUser)));
       } else {
         dispatch(setAuthState(null));
       }
     });
+
     return () => unsubscribe();
   }, [dispatch]);
 
-
   const renderView = () => {
     switch (activeTab) {
-      case 'spaces': return <SpacesView />;
-      case 'search': return <SearchView />;
+      case 'spaces':  return <SpacesView />;
+      case 'search':  return <SearchView />;
       case 'profile': return <ProfileView />;
-      default: return <HomeView />;
+      default:        return <HomeView />;
     }
   };
 
@@ -88,7 +67,10 @@ export default function App() {
     return (
       <div className="flex items-center justify-center min-h-screen" style={{ background: 'var(--bg-primary)' }}>
         <div className="flex flex-col items-center gap-4">
-          <div className="w-10 h-10 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'var(--accent-color)', borderTopColor: 'transparent' }} />
+          <div
+            className="w-10 h-10 rounded-full border-2 border-t-transparent animate-spin"
+            style={{ borderColor: 'var(--accent-color)', borderTopColor: 'transparent' }}
+          />
           <p className="text-sm font-medium" style={{ color: 'var(--text-muted)' }}>Loading StoreQL…</p>
         </div>
       </div>
@@ -104,7 +86,6 @@ export default function App() {
           {renderView()}
         </main>
       </div>
-      {/* Overlays */}
       <AuthModal />
       <CaptureModal />
       <CreateSpaceModal />

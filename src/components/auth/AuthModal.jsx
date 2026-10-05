@@ -1,28 +1,36 @@
 import { useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Mail, Lock, User, ArrowRight } from 'lucide-react';
+import { X, Mail, Lock, User, ArrowRight, Loader2 } from 'lucide-react';
 import { setAuthModalOpen, setAuthMode, addToast } from '../../store/uiSlice';
 import {
   loginWithEmail,
   signupWithEmail,
-  setAuthState,
   setAuthError,
-  setAuthLoading,
+  setGoogleLoading,
   clearAuthError,
   formatAuthError,
+  serializeUser,
+  setAuthState,
 } from '../../store/authSlice';
-import { auth, googleProvider, signInWithPopup } from '../../services/firebase';
+import { auth, googleProvider, signInWithRedirect, signInWithPopup } from '../../services/firebase';
 import { api } from '../../services/api';
 import googleIconSrc from '../../assets/google.png';
 
+// Helper that picks the best Google sign-in method:
+//  - In localhost/dev: use popup (instant, no page reload)
+//  - In production:   use redirect (no popup, works on all browsers/devices)
+const isLocalhost = () =>
+  typeof window !== 'undefined' &&
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
 export default function AuthModal() {
   const dispatch = useDispatch();
-  const { authModalOpen, authMode } = useSelector((s) => s.ui);
-  const { loading, error } = useSelector((s) => s.auth);
+  const { authModalOpen, authMode }            = useSelector((s) => s.ui);
+  const { loading, googleLoading, error }      = useSelector((s) => s.auth);
 
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [name,     setName]     = useState('');
+  const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
 
   const close = () => {
@@ -55,48 +63,46 @@ export default function AuthModal() {
 
   const handleGoogle = async () => {
     dispatch(clearAuthError());
-    dispatch(setAuthLoading(true));
 
-    try {
-      // Direct call preserves browser user activation/gesture so Chrome never blocks popup
-      const result = await signInWithPopup(auth, googleProvider);
-      const firebaseUser = result.user;
-
-      let syncData = null;
+    if (isLocalhost()) {
+      // ── Development: use popup (no page reload, instant feedback)
+      dispatch(setGoogleLoading(true));
       try {
-        syncData = await api.syncUser();
+        const result = await signInWithPopup(auth, googleProvider);
+        let backendUser = {};
+        try { backendUser = (await api.syncUser())?.user ?? {}; } catch (_) {}
+        const serialized = serializeUser(result.user, backendUser);
+        dispatch(setAuthState(serialized));
+        dispatch(addToast({ type: 'success', title: 'Signed in!', message: `Welcome, ${serialized.displayName}!` }));
+        close();
       } catch (err) {
-        console.warn('Backend sync note:', err.message);
+        if (err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') {
+          dispatch(setAuthError(formatAuthError(err)));
+        }
+      } finally {
+        dispatch(setGoogleLoading(false));
       }
-
-      const serialized = {
-        uid: firebaseUser.uid,
-        email: firebaseUser.email,
-        displayName: syncData?.user?.name || firebaseUser.displayName || 'Collector',
-        photoURL: syncData?.user?.profileImageUrl || firebaseUser.photoURL || null,
-        emailVerified: firebaseUser.emailVerified,
-        providers: firebaseUser.providerData ? firebaseUser.providerData.map((p) => p.providerId) : [],
-        mongoId: syncData?.user?.id || null,
-      };
-
-      dispatch(setAuthState(serialized));
-      dispatch(addToast({
-        type: 'success',
-        title: 'Signed in!',
-        message: `Welcome, ${serialized.displayName}!`,
-      }));
-      close();
-    } catch (err) {
-      dispatch(setAuthLoading(false));
-      if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
-        return;
+    } else {
+      // ── Production: use redirect (universal, no popup blocking ever)
+      // Show spinner and redirect — result is captured in App.jsx on next load
+      dispatch(setGoogleLoading(true));
+      try {
+        await signInWithRedirect(auth, googleProvider);
+        // browser navigates away here — no code after this runs
+      } catch (err) {
+        dispatch(setGoogleLoading(false));
+        dispatch(setAuthError(formatAuthError(err)));
       }
-      dispatch(setAuthError(formatAuthError(err)));
     }
   };
 
-
-  const inputCls = `w-full px-3.5 py-2.5 rounded-xl text-sm outline-none transition-all`;
+  const inputStyle = {
+    paddingLeft: '2.5rem',
+    background: 'var(--bg-surface-alt)',
+    border: '1px solid var(--border-color)',
+    color: 'var(--text-primary)',
+  };
+  const inputCls = 'w-full px-3.5 py-2.5 rounded-xl text-sm outline-none transition-all';
 
   return (
     <AnimatePresence>
@@ -146,16 +152,23 @@ export default function AuthModal() {
               {/* Google sign-in */}
               <button
                 onClick={handleGoogle}
-                disabled={loading}
+                disabled={loading || googleLoading}
                 className="w-full flex items-center justify-center gap-2.5 py-2.5 rounded-xl text-sm font-medium mb-5 transition-all hover:scale-[1.01] active:scale-[0.99]"
                 style={{
                   background: 'var(--bg-surface-alt)',
                   border: '1px solid var(--border-color)',
                   color: 'var(--text-primary)',
+                  opacity: googleLoading ? 0.75 : 1,
                 }}
               >
-                <img src={googleIconSrc} alt="Google" className="w-4.5 h-4.5" style={{ width: 18, height: 18 }} />
-                Continue with Google
+                {googleLoading ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <img src={googleIconSrc} alt="Google" style={{ width: 18, height: 18 }} />
+                )}
+                {googleLoading
+                  ? (isLocalhost() ? 'Opening Google…' : 'Redirecting to Google…')
+                  : 'Continue with Google'}
               </button>
 
               {/* Divider */}
@@ -176,12 +189,7 @@ export default function AuthModal() {
                       onChange={(e) => setName(e.target.value)}
                       placeholder="Full name"
                       className={inputCls}
-                      style={{
-                        paddingLeft: '2.5rem',
-                        background: 'var(--bg-surface-alt)',
-                        border: '1px solid var(--border-color)',
-                        color: 'var(--text-primary)',
-                      }}
+                      style={inputStyle}
                     />
                   </div>
                 )}
@@ -195,12 +203,7 @@ export default function AuthModal() {
                     placeholder="Email address"
                     required
                     className={inputCls}
-                    style={{
-                      paddingLeft: '2.5rem',
-                      background: 'var(--bg-surface-alt)',
-                      border: '1px solid var(--border-color)',
-                      color: 'var(--text-primary)',
-                    }}
+                    style={inputStyle}
                   />
                 </div>
 
@@ -214,25 +217,20 @@ export default function AuthModal() {
                     required
                     minLength={6}
                     className={inputCls}
-                    style={{
-                      paddingLeft: '2.5rem',
-                      background: 'var(--bg-surface-alt)',
-                      border: '1px solid var(--border-color)',
-                      color: 'var(--text-primary)',
-                    }}
+                    style={inputStyle}
                   />
                 </div>
 
                 {/* Error */}
                 {error && (
-                  <p className="text-sm px-1" style={{ color: 'var(--accent-color)' }}>
+                  <p className="text-sm px-1" style={{ color: 'var(--color-danger, #B23A34)' }}>
                     {error}
                   </p>
                 )}
 
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || googleLoading}
                   className="mt-1 w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-all hover:scale-[1.01] active:scale-[0.99]"
                   style={{
                     background: 'var(--accent-color)',
@@ -240,14 +238,10 @@ export default function AuthModal() {
                     opacity: loading ? 0.7 : 1,
                   }}
                 >
-                  {loading ? (
-                    <div className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                  ) : (
-                    <>
-                      <span>{authMode === 'login' ? 'Sign in' : 'Create account'}</span>
-                      <ArrowRight size={15} />
-                    </>
-                  )}
+                  {loading
+                    ? <div className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                    : <><span>{authMode === 'login' ? 'Sign in' : 'Create account'}</span><ArrowRight size={15} /></>
+                  }
                 </button>
               </form>
 

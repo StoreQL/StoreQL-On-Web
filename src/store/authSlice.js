@@ -2,67 +2,68 @@ import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  signInWithPopup,
-  signInWithRedirect,
-  getRedirectResult,
   signOut,
   updateProfile,
 } from 'firebase/auth';
-import { auth, googleProvider } from '../services/firebase';
+import { auth } from '../services/firebase';
 import { api } from '../services/api';
 
+// ─── Error formatter ─────────────────────────────────────────────────────────
 export const formatAuthError = (err) => {
-  if (!err) return 'An error occurred during authentication';
-  const msg = err.code || err.message || '';
-  if (msg.includes('auth/popup-blocked')) {
-    return 'Pop-up was blocked. Please try clicking the button again, or sign in with email.';
-  }
-  if (msg.includes('auth/unauthorized-domain')) {
-    return 'Domain not authorized. Please add your Vercel URL to Firebase Console > Authentication > Settings > Authorized domains.';
-  }
-  if (msg.includes('auth/popup-closed-by-user')) {
-    return 'Sign-in window was closed before finishing.';
-  }
-  if (msg.includes('auth/user-not-found') || msg.includes('auth/wrong-password') || msg.includes('auth/invalid-credential')) {
+  if (!err) return 'Something went wrong. Please try again.';
+  const code = err.code || '';
+  const msg  = err.message || '';
+
+  if (code === 'auth/unauthorized-domain')
+    return 'This site is not authorized in Firebase. Add your Vercel domain in Firebase Console → Authentication → Settings → Authorized domains.';
+  if (code === 'auth/popup-blocked')
+    return 'Pop-up was blocked. Using redirect instead — please wait.';
+  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request')
+    return '';                     // silent — user intentionally closed
+  if (code === 'auth/user-not-found' || code === 'auth/wrong-password' || code === 'auth/invalid-credential')
     return 'Invalid email or password.';
-  }
-  if (msg.includes('auth/email-already-in-use')) {
-    return 'This email address is already registered. Please sign in instead.';
-  }
-  if (msg.includes('auth/weak-password')) {
-    return 'Password should be at least 6 characters.';
-  }
-  if (msg.includes('auth/invalid-email')) {
+  if (code === 'auth/email-already-in-use')
+    return 'Email already registered — please sign in instead.';
+  if (code === 'auth/weak-password')
+    return 'Password must be at least 6 characters.';
+  if (code === 'auth/invalid-email')
     return 'Please enter a valid email address.';
-  }
-  return err.message?.replace('Firebase: ', '') || 'Authentication failed';
+  if (code === 'auth/too-many-requests')
+    return 'Too many attempts. Please wait a moment and try again.';
+  if (code === 'auth/network-request-failed')
+    return 'Network error. Check your internet connection.';
+
+  // Strip the noisy "Firebase:" prefix Firebase includes in messages
+  return msg.replace(/^Firebase:\s*/i, '').replace(/\s*\(auth\/[\w-]+\)\.$/, '') || 'Authentication failed.';
 };
 
-const serializeUser = (user, extra = {}) => {
-  if (!user) return null;
+// ─── User serialiser ──────────────────────────────────────────────────────────
+export const serializeUser = (firebaseUser, backendUser = {}) => {
+  if (!firebaseUser) return null;
   return {
-    uid: user.uid,
-    email: user.email,
-    displayName: extra.name || extra.displayName || user.displayName || 'Collector',
-    photoURL: extra.profileImageUrl || user.photoURL || null,
-    emailVerified: user.emailVerified,
-    providers: user.providerData ? user.providerData.map((p) => p.providerId) : [],
-    mongoId: extra.id || null,
+    uid:           firebaseUser.uid,
+    email:         firebaseUser.email,
+    displayName:   backendUser?.name || firebaseUser.displayName || 'Collector',
+    photoURL:      backendUser?.profileImageUrl || firebaseUser.photoURL || null,
+    emailVerified: firebaseUser.emailVerified,
+    providers:     (firebaseUser.providerData || []).map((p) => p.providerId),
+    mongoId:       backendUser?.id || null,
   };
 };
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const syncBackend = async () => {
+  try { return (await api.syncUser())?.user ?? {}; }
+  catch { return {}; }
+};
+
+// ─── Async thunks ─────────────────────────────────────────────────────────────
 export const loginWithEmail = createAsyncThunk(
   'auth/loginWithEmail',
   async ({ email, password }, { rejectWithValue }) => {
     try {
       const { user } = await signInWithEmailAndPassword(auth, email, password);
-      let syncData = null;
-      try {
-        syncData = await api.syncUser();
-      } catch (err) {
-        console.warn('Backend sync note:', err.message);
-      }
-      return serializeUser(user, syncData?.user);
+      return serializeUser(user, await syncBackend());
     } catch (err) {
       return rejectWithValue(formatAuthError(err));
     }
@@ -75,39 +76,13 @@ export const signupWithEmail = createAsyncThunk(
     try {
       const { user } = await createUserWithEmailAndPassword(auth, email, password);
       if (name?.trim()) {
-        try {
-          await updateProfile(user, { displayName: name.trim() });
-        } catch (_) {}
+        try { await updateProfile(user, { displayName: name.trim() }); } catch (_) {}
       }
-      let syncData = null;
-      try {
-        syncData = await api.syncUser();
-        if (name?.trim()) {
-          await api.updateProfile({ name: name.trim() });
-        }
-      } catch (err) {
-        console.warn('Backend sync note:', err.message);
+      const backendUser = await syncBackend();
+      if (name?.trim()) {
+        try { await api.updateProfile({ name: name.trim() }); } catch (_) {}
       }
-      return serializeUser(user, { ...syncData?.user, displayName: name?.trim() || user.displayName });
-    } catch (err) {
-      return rejectWithValue(formatAuthError(err));
-    }
-  }
-);
-
-export const loginWithGoogle = createAsyncThunk(
-  'auth/loginWithGoogle',
-  async (_, { rejectWithValue }) => {
-    try {
-      const result = await signInWithPopup(auth, googleProvider);
-      const user = result.user;
-      let syncData = null;
-      try {
-        syncData = await api.syncUser();
-      } catch (err) {
-        console.warn('Backend sync note:', err.message);
-      }
-      return serializeUser(user, syncData?.user);
+      return serializeUser(user, { ...backendUser, name: name?.trim() || backendUser?.name });
     } catch (err) {
       return rejectWithValue(formatAuthError(err));
     }
@@ -126,106 +101,58 @@ export const logoutUser = createAsyncThunk(
   }
 );
 
-export const syncUserBackend = createAsyncThunk(
-  'auth/syncUserBackend',
-  async (_, { getState, rejectWithValue }) => {
-    try {
-      const res = await api.syncUser();
-      const currentUser = auth.currentUser;
-      return serializeUser(currentUser, res?.user);
-    } catch (err) {
-      return rejectWithValue(err.message);
-    }
-  }
-);
-
+// ─── Slice ────────────────────────────────────────────────────────────────────
 const authSlice = createSlice({
   name: 'auth',
   initialState: {
-    user: null,
-    loading: false,
-    error: null,
+    user:          null,
+    loading:       false,
+    googleLoading: false,   // separate flag for Google redirect flow
+    error:         null,
     isInitialized: false,
   },
   reducers: {
+    // Called by onAuthStateChanged listener in App.jsx
     setAuthState: (state, action) => {
-      state.user = action.payload;
+      state.user          = action.payload;
       state.isInitialized = true;
-      state.loading = false;
-      state.error = null;
+      state.loading       = false;
+      state.googleLoading = false;
+      state.error         = null;
     },
     setAuthError: (state, action) => {
-      state.error = action.payload;
-      state.loading = false;
+      state.error         = action.payload;
+      state.loading       = false;
+      state.googleLoading = false;
     },
-    setAuthLoading: (state, action) => {
-      state.loading = action.payload;
+    setGoogleLoading: (state, action) => {
+      state.googleLoading = action.payload;
     },
     clearAuthError: (state) => {
       state.error = null;
     },
   },
   extraReducers: (builder) => {
-
     builder
       // Email Login
-      .addCase(loginWithEmail.pending, (state) => {
-        state.loading = true;
-        state.error = null;
-      })
-      .addCase(loginWithEmail.fulfilled, (state, action) => {
-        state.loading = false;
-        state.user = action.payload;
-      })
-      .addCase(loginWithEmail.rejected, (state, action) => {
-        state.loading = false;
-        state.error = action.payload;
-      })
+      .addCase(loginWithEmail.pending,   (state) => { state.loading = true;  state.error = null; })
+      .addCase(loginWithEmail.fulfilled, (state, { payload }) => { state.loading = false; state.user = payload; })
+      .addCase(loginWithEmail.rejected,  (state, { payload }) => { state.loading = false; state.error = payload; })
 
       // Signup
-      .addCase(signupWithEmail.pending, (state) => {
-        state.loading = true;
-        state.error = null;
-      })
-      .addCase(signupWithEmail.fulfilled, (state, action) => {
-        state.loading = false;
-        state.user = action.payload;
-      })
-      .addCase(signupWithEmail.rejected, (state, action) => {
-        state.loading = false;
-        state.error = action.payload;
-      })
-
-      // Google Login
-      .addCase(loginWithGoogle.pending, (state) => {
-        state.loading = true;
-        state.error = null;
-      })
-      .addCase(loginWithGoogle.fulfilled, (state, action) => {
-        state.loading = false;
-        state.user = action.payload;
-      })
-      .addCase(loginWithGoogle.rejected, (state, action) => {
-        state.loading = false;
-        state.error = action.payload;
-      })
+      .addCase(signupWithEmail.pending,   (state) => { state.loading = true;  state.error = null; })
+      .addCase(signupWithEmail.fulfilled, (state, { payload }) => { state.loading = false; state.user = payload; })
+      .addCase(signupWithEmail.rejected,  (state, { payload }) => { state.loading = false; state.error = payload; })
 
       // Logout
       .addCase(logoutUser.fulfilled, (state) => {
-        state.user = null;
-        state.loading = false;
-        state.error = null;
-      })
-
-      // Backend sync
-      .addCase(syncUserBackend.fulfilled, (state, action) => {
-        if (action.payload) {
-          state.user = action.payload;
-        }
+        state.user          = null;
+        state.loading       = false;
+        state.googleLoading = false;
+        state.error         = null;
       });
   },
 });
 
-export const { setAuthState, setAuthError, setAuthLoading, clearAuthError } = authSlice.actions;
+export const { setAuthState, setAuthError, setGoogleLoading, clearAuthError } = authSlice.actions;
 export default authSlice.reducer;
-

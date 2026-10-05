@@ -3,11 +3,40 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signOut,
   updateProfile,
 } from 'firebase/auth';
 import { auth, googleProvider } from '../services/firebase';
 import { api } from '../services/api';
+
+const formatAuthError = (err) => {
+  if (!err) return 'An error occurred during authentication';
+  const msg = err.code || err.message || '';
+  if (msg.includes('auth/popup-blocked')) {
+    return 'Popup was blocked by your browser. Please allow popups for this site or use email sign in.';
+  }
+  if (msg.includes('auth/unauthorized-domain')) {
+    return 'This domain is not authorized in Firebase Console. Please add your Vercel domain to Firebase Auth settings.';
+  }
+  if (msg.includes('auth/popup-closed-by-user')) {
+    return 'Sign-in popup was closed before completing.';
+  }
+  if (msg.includes('auth/user-not-found') || msg.includes('auth/wrong-password') || msg.includes('auth/invalid-credential')) {
+    return 'Invalid email or password.';
+  }
+  if (msg.includes('auth/email-already-in-use')) {
+    return 'This email address is already registered. Please sign in instead.';
+  }
+  if (msg.includes('auth/weak-password')) {
+    return 'Password should be at least 6 characters.';
+  }
+  if (msg.includes('auth/invalid-email')) {
+    return 'Please enter a valid email address.';
+  }
+  return err.message?.replace('Firebase: ', '') || 'Authentication failed';
+};
 
 const serializeUser = (user, extra = {}) => {
   if (!user) return null;
@@ -35,7 +64,7 @@ export const loginWithEmail = createAsyncThunk(
       }
       return serializeUser(user, syncData?.user);
     } catch (err) {
-      return rejectWithValue(err.message || 'Login failed');
+      return rejectWithValue(formatAuthError(err));
     }
   }
 );
@@ -61,7 +90,7 @@ export const signupWithEmail = createAsyncThunk(
       }
       return serializeUser(user, { ...syncData?.user, displayName: name?.trim() || user.displayName });
     } catch (err) {
-      return rejectWithValue(err.message || 'Signup failed');
+      return rejectWithValue(formatAuthError(err));
     }
   }
 );
@@ -70,7 +99,18 @@ export const loginWithGoogle = createAsyncThunk(
   'auth/loginWithGoogle',
   async (_, { rejectWithValue }) => {
     try {
-      const result = await signInWithPopup(auth, googleProvider);
+      let result;
+      try {
+        result = await signInWithPopup(auth, googleProvider);
+      } catch (popupErr) {
+        // If popup is blocked, attempt redirect fallback
+        if (popupErr.code === 'auth/popup-blocked') {
+          console.warn('Popup blocked, falling back to signInWithRedirect');
+          await signInWithRedirect(auth, googleProvider);
+          return null;
+        }
+        throw popupErr;
+      }
       const user = result.user;
       let syncData = null;
       try {
@@ -80,7 +120,7 @@ export const loginWithGoogle = createAsyncThunk(
       }
       return serializeUser(user, syncData?.user);
     } catch (err) {
-      return rejectWithValue(err.message || 'Google sign-in cancelled or failed');
+      return rejectWithValue(formatAuthError(err));
     }
   }
 );
@@ -92,7 +132,7 @@ export const logoutUser = createAsyncThunk(
       await signOut(auth);
       return null;
     } catch (err) {
-      return rejectWithValue(err.message || 'Logout failed');
+      return rejectWithValue(formatAuthError(err));
     }
   }
 );
@@ -109,6 +149,7 @@ export const syncUserBackend = createAsyncThunk(
     }
   }
 );
+
 
 const authSlice = createSlice({
   name: 'auth',

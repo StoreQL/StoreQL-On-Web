@@ -6,9 +6,14 @@ import { setAuthModalOpen, setAuthMode, addToast } from '../../store/uiSlice';
 import {
   loginWithEmail,
   signupWithEmail,
-  loginWithGoogle,
+  setAuthState,
+  setAuthError,
+  setAuthLoading,
   clearAuthError,
+  formatAuthError,
 } from '../../store/authSlice';
+import { auth, googleProvider, signInWithPopup } from '../../services/firebase';
+import { api } from '../../services/api';
 import googleIconSrc from '../../assets/google.png';
 
 export default function AuthModal() {
@@ -49,12 +54,47 @@ export default function AuthModal() {
   };
 
   const handleGoogle = async () => {
-    const res = await dispatch(loginWithGoogle());
-    if (!res.error) {
-      dispatch(addToast({ type: 'success', title: 'Signed in!', message: `Welcome, ${res.payload?.displayName || 'Collector'}!` }));
+    dispatch(clearAuthError());
+    dispatch(setAuthLoading(true));
+
+    try {
+      // Direct call preserves browser user activation/gesture so Chrome never blocks popup
+      const result = await signInWithPopup(auth, googleProvider);
+      const firebaseUser = result.user;
+
+      let syncData = null;
+      try {
+        syncData = await api.syncUser();
+      } catch (err) {
+        console.warn('Backend sync note:', err.message);
+      }
+
+      const serialized = {
+        uid: firebaseUser.uid,
+        email: firebaseUser.email,
+        displayName: syncData?.user?.name || firebaseUser.displayName || 'Collector',
+        photoURL: syncData?.user?.profileImageUrl || firebaseUser.photoURL || null,
+        emailVerified: firebaseUser.emailVerified,
+        providers: firebaseUser.providerData ? firebaseUser.providerData.map((p) => p.providerId) : [],
+        mongoId: syncData?.user?.id || null,
+      };
+
+      dispatch(setAuthState(serialized));
+      dispatch(addToast({
+        type: 'success',
+        title: 'Signed in!',
+        message: `Welcome, ${serialized.displayName}!`,
+      }));
       close();
+    } catch (err) {
+      dispatch(setAuthLoading(false));
+      if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
+        return;
+      }
+      dispatch(setAuthError(formatAuthError(err)));
     }
   };
+
 
   const inputCls = `w-full px-3.5 py-2.5 rounded-xl text-sm outline-none transition-all`;
 

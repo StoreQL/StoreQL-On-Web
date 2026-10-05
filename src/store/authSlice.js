@@ -11,11 +11,11 @@ import {
 import { auth, googleProvider } from '../services/firebase';
 import { api } from '../services/api';
 
-const formatAuthError = (err) => {
+export const formatAuthError = (err) => {
   if (!err) return 'An error occurred during authentication';
   const msg = err.code || err.message || '';
   if (msg.includes('auth/popup-blocked')) {
-    return 'Pop-up blocked by browser. Please enable pop-ups in your URL bar, or sign in with email.';
+    return 'Pop-up was blocked. Please try clicking the button again, or sign in with email.';
   }
   if (msg.includes('auth/unauthorized-domain')) {
     return 'Domain not authorized. Please add your Vercel URL to Firebase Console > Authentication > Settings > Authorized domains.';
@@ -139,7 +139,6 @@ export const syncUserBackend = createAsyncThunk(
   }
 );
 
-
 const authSlice = createSlice({
   name: 'auth',
   initialState: {
@@ -155,11 +154,19 @@ const authSlice = createSlice({
       state.loading = false;
       state.error = null;
     },
+    setAuthError: (state, action) => {
+      state.error = action.payload;
+      state.loading = false;
+    },
+    setAuthLoading: (state, action) => {
+      state.loading = action.payload;
+    },
     clearAuthError: (state) => {
       state.error = null;
     },
   },
   extraReducers: (builder) => {
+
     builder
       // Email Login
       .addCase(loginWithEmail.pending, (state) => {
@@ -219,5 +226,6 @@ const authSlice = createSlice({
   },
 });
 
-export const { setAuthState, clearAuthError } = authSlice.actions;
+export const { setAuthState, setAuthError, setAuthLoading, clearAuthError } = authSlice.actions;
 export default authSlice.reducer;
+

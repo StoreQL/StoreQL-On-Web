@@ -1,7 +1,6 @@
 import { useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { onAuthStateChanged } from './services/firebase';
-import { auth } from './services/firebase';
+import { auth, onAuthStateChanged, getRedirectResult } from './services/firebase';
 import { setAuthState } from './store/authSlice';
 import { setTheme } from './store/uiSlice';
 import { api } from './services/api';
@@ -27,8 +26,32 @@ export default function App() {
     dispatch(setTheme(theme));
   }, []);
 
-  // Firebase auth listener
+  // Firebase auth listener & redirect handler
   useEffect(() => {
+    // 1. Process redirect result if returning from Google redirect auth
+    getRedirectResult(auth)
+      .then(async (result) => {
+        if (result?.user) {
+          let syncExtra = null;
+          try {
+            syncExtra = await api.syncUser();
+          } catch (_) {}
+          dispatch(setAuthState({
+            uid: result.user.uid,
+            email: result.user.email,
+            displayName: syncExtra?.user?.name || result.user.displayName || 'Collector',
+            photoURL: syncExtra?.user?.profileImageUrl || result.user.photoURL || null,
+            emailVerified: result.user.emailVerified,
+            providers: result.user.providerData?.map((p) => p.providerId) || [],
+            mongoId: syncExtra?.user?.id || null,
+          }));
+        }
+      })
+      .catch((err) => {
+        console.warn('[StoreQL Auth] Redirect signin error:', err);
+      });
+
+    // 2. Continuous auth state listener
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         let syncExtra = null;
@@ -50,6 +73,7 @@ export default function App() {
     });
     return () => unsubscribe();
   }, [dispatch]);
+
 
   const renderView = () => {
     switch (activeTab) {
